@@ -1,4 +1,4 @@
-package com.space.compiler.processor
+package com.space.compiler.mapper
 
 import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.KSPLogger
@@ -6,7 +6,6 @@ import com.google.devtools.ksp.processing.Resolver
 import com.google.devtools.ksp.processing.SymbolProcessor
 import com.google.devtools.ksp.symbol.*
 import com.space.annotations.*
-import com.space.compiler.ModelType
 import com.space.compiler.extensions.*
 import com.space.compiler.extensions.capitalize
 import com.space.compiler.extensions.decapitalize
@@ -41,8 +40,8 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
 
     private fun List<KSClassDeclaration>.mapNotNullToDtoAndDomainPairs(domainDeclarations: List<KSClassDeclaration>) =
         mapNotNull { dtoDeclaration ->
-            val dtoDeclarationName = dtoDeclaration.withoutSuffix(ModelType.DTO.suffix)
-            domainDeclarations.find { it.withoutSuffix(ModelType.Domain.suffix) == dtoDeclarationName }
+            val dtoDeclarationName = dtoDeclaration.withoutSuffix(MapperModelType.DTO.suffix)
+            domainDeclarations.find { it.withoutSuffix(MapperModelType.Domain.suffix) == dtoDeclarationName }
                 ?.let { domainDeclaration -> dtoDeclaration to domainDeclaration }
         }
 
@@ -52,14 +51,14 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
         dtoDeclaration: KSClassDeclaration,
         domainDeclaration: KSClassDeclaration
     ) {
-        val fileName = dtoDeclaration.withoutSuffix(ModelType.DTO.suffix)
+        val fileName = dtoDeclaration.withoutSuffix(MapperModelType.DTO.suffix)
         val filePackage = dtoDeclaration.packageName.asString() + MAPPER_PACKAGE_NAME
         val className = "$filePackage.${fileName}Mapper"
         val classDeclaration = resolver.getClassDeclarationByName(resolver.getKSNameFromString(className))
         if (classDeclaration != null) return
 
-        val dtoDeclarationObject = DeclarationObject(dtoDeclaration, ModelType.DTO)
-        val domainDeclarationObject = DeclarationObject(domainDeclaration, ModelType.Domain)
+        val dtoDeclarationObject = DeclarationObject(dtoDeclaration, MapperModelType.DTO)
+        val domainDeclarationObject = DeclarationObject(domainDeclaration, MapperModelType.Domain)
 
         val typeSpec = TypeSpec.classBuilder("${fileName}Mapper")
             .addOriginatingKSFile(file)
@@ -197,15 +196,15 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
 
     data class DeclarationObject(
         val declaration: KSClassDeclaration,
-        val modelType: ModelType
+        val modelType: MapperModelType
     ) {
         fun getFieldName(ksValueParameter: KSValueParameter): String? {
             return when (modelType) {
-                ModelType.Domain -> ksValueParameter.annotations.firstOrNull {
+                MapperModelType.Domain -> ksValueParameter.annotations.firstOrNull {
                     it.annotationType.resolve().declaration.simpleName.asString() == DTOFieldName::class.simpleName
                 }?.arguments?.first()?.value as? String
 
-                ModelType.DTO -> ksValueParameter.annotations.firstOrNull {
+                MapperModelType.DTO -> ksValueParameter.annotations.firstOrNull {
                     it.annotationType.resolve().declaration.simpleName.asString() == DomainFieldName::class.simpleName
                 }?.arguments?.first()?.value as? String
             }
