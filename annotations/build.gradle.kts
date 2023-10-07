@@ -1,9 +1,14 @@
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
+    id("maven-publish")
 }
 
-group = "com.space"
-version = "0.1-SNAPSHOT"
+repositories {
+    mavenCentral()
+}
+
+group = "com.github.ted3x.android-annotations"
+version = "0.0.1"
 
 kotlin {
     jvm {
