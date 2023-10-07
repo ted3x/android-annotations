@@ -16,3 +16,4 @@ rootProject.name = "android-annotations"
 include("annotations")
 include("compiler")
 include("integration-test")
+include("integration")

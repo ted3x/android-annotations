@@ -8,7 +8,7 @@ import com.space.annotations.MapWith
 data class ModelOneDto(val id: String, val username: String)
 
 @DomainModel
-data class ModelOneDomain(val id: String, val username: String)
+data class ModelOneDomainModel(val id: String, val username: String)
 
 
 
@@ -33,13 +33,13 @@ enum class ModelTwoEnumDto {
 data class ModelTwoDto(val id: String, val enum: ModelTwoEnumDto, val test: Int)
 
 @DomainModel
-enum class ModelTwoEnumDomain {
+enum class ModelTwoEnumDomainModel {
     Enabled,
     Disabled
 }
 
 @DomainModel
-data class ModelTwoDomain(val id: String, val enum: ModelTwoEnumDomain, val test: String)
+data class ModelTwoDomainModel(val id: String, val enum: ModelTwoEnumDomainModel, val test: String)
 
 @DTO(MapWith.Value)
 enum class ModelTwoEnumValueDto(val value: Int) {
@@ -48,7 +48,7 @@ enum class ModelTwoEnumValueDto(val value: Int) {
 }
 
 @DomainModel(MapWith.Value)
-enum class ModelTwoEnumValueDomain(val value: Int) {
+enum class ModelTwoEnumValueDomainModel(val value: Int) {
     Enabled(1),
     Disabled(2)
 }
@@ -57,4 +57,4 @@ enum class ModelTwoEnumValueDomain(val value: Int) {
 data class ModelTwoWithAnotherModelDto(val id: String, val model: ModelOneDto, val test: Int)
 
 @DomainModel
-data class ModelTwoWithAnotherModelDomain(val id: String, val model: ModelOneDomain, val test: String)
+data class ModelTwoWithAnotherModelDomainModel(val id: String, val model: ModelOneDomainModel, val test: String)

@@ -5,9 +5,8 @@ import com.google.devtools.ksp.processing.KSPLogger
 import com.google.devtools.ksp.processing.Resolver
 import com.google.devtools.ksp.processing.SymbolProcessor
 import com.google.devtools.ksp.symbol.*
-import com.space.annotations.DTO
-import com.space.annotations.DomainModel
-import com.space.annotations.MapWith
+import com.space.annotations.*
+import com.space.compiler.ModelType
 import com.space.compiler.extensions.*
 import com.space.compiler.extensions.capitalize
 import com.space.compiler.extensions.decapitalize
@@ -19,38 +18,48 @@ import com.squareup.kotlinpoet.ksp.toClassName
 import com.squareup.kotlinpoet.ksp.toTypeName
 import com.squareup.kotlinpoet.ksp.writeTo
 
+// Todo add warning when some class is missing dto / domain model
+// one class is annotated with dto but there is no domain model annotation or vice versa
 class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGenerator: CodeGenerator) : SymbolProcessor {
-
     override fun process(resolver: Resolver): List<KSAnnotated> {
-        resolver.getNewFiles().forEach { file ->
+        val unresolvedSymbols = mutableListOf<KSAnnotated>()
+        resolver.getAllFiles().forEach { file ->
             val dtoDeclarations = file.filterAnnotatedWith(DTO::class)
             val domainDeclarations = file.filterAnnotatedWith(DomainModel::class)
 
             dtoDeclarations.mapNotNullToDtoAndDomainPairs(domainDeclarations)
                 .forEach { (dtoDeclaration, domainDeclaration) ->
-                    generateMapperFile(file, dtoDeclaration, domainDeclaration)
+                    try {
+                        generateMapperFile(resolver, file, dtoDeclaration, domainDeclaration)
+                    } catch (e: FileNotGeneratedException) {
+                        unresolvedSymbols.addAll(listOf(dtoDeclaration, domainDeclaration))
+                    }
                 }
         }
-        return emptyList()
+        return unresolvedSymbols
     }
 
     private fun List<KSClassDeclaration>.mapNotNullToDtoAndDomainPairs(domainDeclarations: List<KSClassDeclaration>) =
         mapNotNull { dtoDeclaration ->
-            val dtoDeclarationName = dtoDeclaration.withoutSuffix(DTO_SUFFIX)
-            domainDeclarations.find { it.withoutSuffix(DOMAIN_SUFFIX) == dtoDeclarationName }
+            val dtoDeclarationName = dtoDeclaration.withoutSuffix(ModelType.DTO.suffix)
+            domainDeclarations.find { it.withoutSuffix(ModelType.Domain.suffix) == dtoDeclarationName }
                 ?.let { domainDeclaration -> dtoDeclaration to domainDeclaration }
         }
 
     private fun generateMapperFile(
+        resolver: Resolver,
         file: KSFile,
         dtoDeclaration: KSClassDeclaration,
         domainDeclaration: KSClassDeclaration
     ) {
-        val fileName = dtoDeclaration.withoutSuffix(DTO_SUFFIX)
+        val fileName = dtoDeclaration.withoutSuffix(ModelType.DTO.suffix)
         val filePackage = dtoDeclaration.packageName.asString() + MAPPER_PACKAGE_NAME
+        val className = "$filePackage.${fileName}Mapper"
+        val classDeclaration = resolver.getClassDeclarationByName(resolver.getKSNameFromString(className))
+        if (classDeclaration != null) return
 
-        val dtoDeclarationObject = DeclarationObject(dtoDeclaration, DTO_MODEL, DTO_SUFFIX)
-        val domainDeclarationObject = DeclarationObject(domainDeclaration, DOMAIN_MODEL, DOMAIN_SUFFIX)
+        val dtoDeclarationObject = DeclarationObject(dtoDeclaration, ModelType.DTO)
+        val domainDeclarationObject = DeclarationObject(domainDeclaration, ModelType.Domain)
 
         val typeSpec = TypeSpec.classBuilder("${fileName}Mapper")
             .addOriginatingKSFile(file)
@@ -71,11 +80,14 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
             .writeTo(codeGenerator, aggregating = false)
     }
 
-    private fun TypeSpec.Builder.generateMapperFunction(from: DeclarationObject, to: DeclarationObject) {
+    private fun TypeSpec.Builder.generateMapperFunction(
+        from: DeclarationObject,
+        to: DeclarationObject
+    ) {
         val functionName = getFunctionName(from, to)
 
         val funSpecBuilder = FunSpec.builder(functionName)
-            .addParameter(from.name, from.declaration.toClassName())
+            .addParameter(from.modelType.modelName, from.declaration.toClassName())
             .returns(to.declaration.toClassName())
 
         val codeBuilder = CodeBlock.builder().add("return·%T(\n", to.declaration.toClassName())
@@ -84,11 +96,23 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
             val paramName = param.name?.asString() ?: return@forEach
 
             val fromParam = from.declaration.primaryConstructor?.parameters
-                ?.firstOrNull { it.name?.asString() == paramName }
+                ?.firstOrNull {
+                    it.name?.asString() == paramName || paramName == from.getFieldName(it)
+                }
 
             val mappingCode = when {
-                param.getExternalMapper() != null -> generateExternalMapperCode(paramName, param, from, to, functionName, funSpecBuilder)
-                fromParam != null && fromParam.type.resolve() == param.type.resolve() -> "${from.name}.$paramName"
+                param.getExternalMapper() != null -> {
+                    generateExternalMapperCode(
+                        paramName,
+                        param,
+                        from,
+                        to,
+                        functionName,
+                        funSpecBuilder
+                    )
+                }
+
+                fromParam != null && fromParam.type.resolve() == param.type.resolve() -> "${from.modelType.modelName}.$fromParam"
                 else -> generateLambdaMapperCode(from, param, paramName, funSpecBuilder)
             }
 
@@ -110,12 +134,14 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
         funSpec: FunSpec.Builder
     ): String {
         val externalMapper = param.getExternalMapper() ?: return ""
-        val externalClazzName = externalMapper.toClassName().simpleName.removeSuffix(to.suffix)
+        val externalClazzName = externalMapper.toClassName().simpleName.removeSuffix(to.modelType.suffix)
+        val packageName = param.type.resolve().toClassName().packageName + MAPPER_PACKAGE_NAME
+        val parameterName = externalClazzName.decapitalize() + "Mapper"
         funSpec.addParameter(
-            externalClazzName.decapitalize(),
-            ClassName("com.space.test.mappers", "${externalClazzName}Mapper")
+            parameterName,
+            ClassName(packageName, "${externalClazzName}Mapper")
         )
-        return "${externalClazzName.decapitalize()}.$functionName(${from.name}.$paramName)"
+        return "${parameterName}.$functionName(${from.modelType.modelName}.$paramName)"
     }
 
     private fun generateLambdaMapperCode(
@@ -124,9 +150,12 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
         paramName: String,
         funSpecBuilder: FunSpec.Builder
     ): String {
-        val fromParamType = from.declaration.primaryConstructor?.parameters
-            ?.firstOrNull { it.name?.asString() == paramName }
-            ?.type?.resolve()?.toTypeName() ?: return ""
+        val fromParam = from.declaration.primaryConstructor?.parameters
+            ?.firstOrNull {
+                it.name?.asString() == paramName || paramName == from.getFieldName(it)
+            }
+        val fromParamType = fromParam?.type?.resolve()?.toTypeName() ?: return ""
+        val fromParamName = fromParam.name?.asString()
 
         val returnType = param.type.resolve().toTypeName()
 
@@ -136,7 +165,7 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
         )
 
         funSpecBuilder.addParameter("get${paramName.capitalize()}", functionType)
-        return "get${paramName.capitalize()}.invoke(${from.name}.$paramName)"
+        return "get${paramName.capitalize()}.invoke(${from.modelType.modelName}.$fromParamName)"
     }
 
     private fun TypeSpec.Builder.generateEnumMapperFunction(
@@ -144,13 +173,13 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
     ) {
         val functionName = getFunctionName(from, to)
         val funSpec = FunSpec.builder(functionName)
-            .addParameter(from.name, from.declaration.toClassName())
+            .addParameter(from.modelType.modelName, from.declaration.toClassName())
             .returns(to.declaration.toClassName())
         val clazzName = from.declaration.annotations.first().arguments.first().value.toString().substringAfterLast(".")
         val mapWith = enumValueOf<MapWith>(clazzName)
         funSpec.addCode(
             CodeBlock.builder()
-                .add("return ${to.declaration.toClassName()}.values().first { it.${mapWith.identifier} == ${from.name}.${mapWith.identifier}  }")
+                .add("return ${to.declaration.toClassName()}.values().first { it.${mapWith.identifier} == ${from.modelType.modelName}.${mapWith.identifier}  }")
                 .build()
         )
         addFunction(funSpec.build())
@@ -163,17 +192,29 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
         } else null
     }
 
-    private fun getFunctionName(from: DeclarationObject, to: DeclarationObject) = "map${from.suffix}To${to.suffix}"
+    private fun getFunctionName(from: DeclarationObject, to: DeclarationObject) =
+        "map${from.modelType.suffix}To${to.modelType.suffix}"
 
-    data class DeclarationObject(val declaration: KSClassDeclaration, val name: String, val suffix: String)
+    data class DeclarationObject(
+        val declaration: KSClassDeclaration,
+        val modelType: ModelType
+    ) {
+        fun getFieldName(ksValueParameter: KSValueParameter): String? {
+            return when (modelType) {
+                ModelType.Domain -> ksValueParameter.annotations.firstOrNull {
+                    it.annotationType.resolve().declaration.simpleName.asString() == DTOFieldName::class.simpleName
+                }?.arguments?.first()?.value as? String
+
+                ModelType.DTO -> ksValueParameter.annotations.firstOrNull {
+                    it.annotationType.resolve().declaration.simpleName.asString() == DomainFieldName::class.simpleName
+                }?.arguments?.first()?.value as? String
+            }
+        }
+    }
+
+    class FileNotGeneratedException(s: String) : Exception(s)
 
     companion object {
-        private const val DTO_SUFFIX = "Dto"
-        private const val DTO_MODEL = "dtoModel"
-
-        private const val DOMAIN_SUFFIX = "Domain"
-        private const val DOMAIN_MODEL = "domainModel"
-
         private const val MAPPER_PACKAGE_NAME = ".mappers"
     }
 }
