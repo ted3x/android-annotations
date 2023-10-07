@@ -20,95 +20,123 @@ import com.squareup.kotlinpoet.ksp.toTypeName
 import com.squareup.kotlinpoet.ksp.writeTo
 
 class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGenerator: CodeGenerator) : SymbolProcessor {
+
     override fun process(resolver: Resolver): List<KSAnnotated> {
-        for (file in resolver.getNewFiles()) {
+        resolver.getNewFiles().forEach { file ->
             val dtoDeclarations = file.filterAnnotatedWith(DTO::class)
             val domainDeclarations = file.filterAnnotatedWith(DomainModel::class)
 
-            val declarations = dtoDeclarations.mapNotNull { dtoDeclaration ->
-                val dtoDeclarationName = dtoDeclaration.withoutSuffix(DTO_SUFFIX)
-                val domainDeclaration =
-                    domainDeclarations.find { it.withoutSuffix(DOMAIN_SUFFIX) == dtoDeclarationName }
-                if (domainDeclaration != null) dtoDeclaration to domainDeclaration
-                else null
-            }
+            dtoDeclarations.mapNotNullToDtoAndDomainPairs(domainDeclarations)
+                .forEach { (dtoDeclaration, domainDeclaration) ->
+                    generateMapperFile(file, dtoDeclaration, domainDeclaration)
+                }
+        }
+        return emptyList()
+    }
 
-            declarations.forEach { declaration ->
-                val dtoDeclaration = declaration.first
-                val domainDeclaration = declaration.second
-                val fileName: String = dtoDeclaration.withoutSuffix(DTO_SUFFIX)
-                val filePackage: String = declaration.first.packageName.asString() + MAPPER_PACKAGE_NAME
-
-                FileSpec.builder(filePackage, "${fileName}Mapper_Gen")
-                    .apply {
-                        val declarationImpl = "${fileName}Mapper"
-
-                        addType(
-                            TypeSpec.classBuilder(declarationImpl)
-                                .addOriginatingKSFile(file)
-                                .apply {
-                                    val dtoDeclarationObject = DeclarationObject(dtoDeclaration, DTO_MODEL, DTO_SUFFIX)
-                                    val domainDeclarationObject =
-                                        DeclarationObject(domainDeclaration, DOMAIN_MODEL, DOMAIN_SUFFIX)
-                                    if (dtoDeclaration.classKind == ClassKind.CLASS) {
-                                        generateMapperFunction(dtoDeclarationObject, domainDeclarationObject)
-                                        generateMapperFunction(domainDeclarationObject, dtoDeclarationObject)
-                                    } else {
-                                        generateEnumMapperFunction(dtoDeclarationObject, domainDeclarationObject)
-                                        generateEnumMapperFunction(domainDeclarationObject, dtoDeclarationObject)
-                                    }
-                                }
-                                .build())
-                    }
-                    .build()
-                    .writeTo(codeGenerator, aggregating = false)
-            }
+    private fun List<KSClassDeclaration>.mapNotNullToDtoAndDomainPairs(domainDeclarations: List<KSClassDeclaration>) =
+        mapNotNull { dtoDeclaration ->
+            val dtoDeclarationName = dtoDeclaration.withoutSuffix(DTO_SUFFIX)
+            domainDeclarations.find { it.withoutSuffix(DOMAIN_SUFFIX) == dtoDeclarationName }
+                ?.let { domainDeclaration -> dtoDeclaration to domainDeclaration }
         }
 
-        return emptyList()
+    private fun generateMapperFile(
+        file: KSFile,
+        dtoDeclaration: KSClassDeclaration,
+        domainDeclaration: KSClassDeclaration
+    ) {
+        val fileName = dtoDeclaration.withoutSuffix(DTO_SUFFIX)
+        val filePackage = dtoDeclaration.packageName.asString() + MAPPER_PACKAGE_NAME
+
+        val dtoDeclarationObject = DeclarationObject(dtoDeclaration, DTO_MODEL, DTO_SUFFIX)
+        val domainDeclarationObject = DeclarationObject(domainDeclaration, DOMAIN_MODEL, DOMAIN_SUFFIX)
+
+        val typeSpec = TypeSpec.classBuilder("${fileName}Mapper")
+            .addOriginatingKSFile(file)
+            .apply {
+                if (dtoDeclaration.classKind == ClassKind.CLASS) {
+                    generateMapperFunction(dtoDeclarationObject, domainDeclarationObject)
+                    generateMapperFunction(domainDeclarationObject, dtoDeclarationObject)
+                } else {
+                    generateEnumMapperFunction(dtoDeclarationObject, domainDeclarationObject)
+                    generateEnumMapperFunction(domainDeclarationObject, dtoDeclarationObject)
+                }
+            }
+            .build()
+
+        FileSpec.builder(filePackage, "${fileName}Mapper_Gen")
+            .addType(typeSpec)
+            .build()
+            .writeTo(codeGenerator, aggregating = false)
     }
 
     private fun TypeSpec.Builder.generateMapperFunction(from: DeclarationObject, to: DeclarationObject) {
         val functionName = getFunctionName(from, to)
-        val funSpec = FunSpec.builder(functionName)
+
+        val funSpecBuilder = FunSpec.builder(functionName)
             .addParameter(from.name, from.declaration.toClassName())
             .returns(to.declaration.toClassName())
-        funSpec.addCode(
-            CodeBlock.builder()
-                .add("return·%T(\n", to.declaration.toClassName()).withIndent {
-                    for (param in to.declaration.primaryConstructor!!.parameters) {
-                        val paramName = param.name!!.asString()
-                        param.getExternalMapper()?.let {
-                            val parameterName = it.toClassName().simpleName.removeSuffix(to.suffix)
-                            funSpec.addParameter(
-                                parameterName.decapitalize(),
-                                ClassName("com.space.test.mappers", "${parameterName}Mapper")
-                            )
-                            add("%1L = ${parameterName.decapitalize()}.${functionName}(${from.name}.%1L),\n", paramName)
-                        } ?: run {
-                            val fromParam =
-                                from.declaration.primaryConstructor!!.parameters.firstOrNull { it.name?.asString() == paramName }
-                            if (fromParam != null && fromParam.type.resolve() == param.type.resolve())
-                                add("%1L = ${from.name}.%1L,\n", paramName)
-                            else {
-                                val receiverType = fromParam?.type?.resolve()?.toTypeName()!!
-                                val returnType = param.type.resolve().toTypeName()
 
-                                // Create a function with a lambda type
-                                val functionType = LambdaTypeName.get(
-                                    parameters = arrayOf(receiverType),
-                                    returnType = returnType
-                                )
-                                val spec = ParameterSpec.builder("get${paramName.capitalize()}", functionType).build()
-                                funSpec.addParameter(spec)
-                                add("%1L = get${paramName.capitalize()}.invoke(${from.name}.%1L),\n", paramName)
-                            }
-                        }
-                    }
-                }
-                .add(")")
-                .build())
-        addFunction(funSpec.build())
+        val codeBuilder = CodeBlock.builder().add("return·%T(\n", to.declaration.toClassName())
+
+        to.declaration.primaryConstructor?.parameters?.forEach { param ->
+            val paramName = param.name?.asString() ?: return@forEach
+
+            val fromParam = from.declaration.primaryConstructor?.parameters
+                ?.firstOrNull { it.name?.asString() == paramName }
+
+            val mappingCode = when {
+                param.getExternalMapper() != null -> generateExternalMapperCode(paramName, param, from, to, functionName, funSpecBuilder)
+                fromParam != null && fromParam.type.resolve() == param.type.resolve() -> "${from.name}.$paramName"
+                else -> generateLambdaMapperCode(from, param, paramName, funSpecBuilder)
+            }
+
+            codeBuilder.add("$paramName = $mappingCode,\n")
+        }
+
+        codeBuilder.add(")")
+
+        funSpecBuilder.addCode(codeBuilder.build())
+        addFunction(funSpecBuilder.build())
+    }
+
+    private fun generateExternalMapperCode(
+        paramName: String,
+        param: KSValueParameter,
+        from: DeclarationObject,
+        to: DeclarationObject,
+        functionName: String,
+        funSpec: FunSpec.Builder
+    ): String {
+        val externalMapper = param.getExternalMapper() ?: return ""
+        val externalClazzName = externalMapper.toClassName().simpleName.removeSuffix(to.suffix)
+        funSpec.addParameter(
+            externalClazzName.decapitalize(),
+            ClassName("com.space.test.mappers", "${externalClazzName}Mapper")
+        )
+        return "${externalClazzName.decapitalize()}.$functionName(${from.name}.$paramName)"
+    }
+
+    private fun generateLambdaMapperCode(
+        from: DeclarationObject,
+        param: KSValueParameter,
+        paramName: String,
+        funSpecBuilder: FunSpec.Builder
+    ): String {
+        val fromParamType = from.declaration.primaryConstructor?.parameters
+            ?.firstOrNull { it.name?.asString() == paramName }
+            ?.type?.resolve()?.toTypeName() ?: return ""
+
+        val returnType = param.type.resolve().toTypeName()
+
+        val functionType = LambdaTypeName.get(
+            parameters = arrayOf(fromParamType),
+            returnType = returnType
+        )
+
+        funSpecBuilder.addParameter("get${paramName.capitalize()}", functionType)
+        return "get${paramName.capitalize()}.invoke(${from.name}.$paramName)"
     }
 
     private fun TypeSpec.Builder.generateEnumMapperFunction(
@@ -136,6 +164,7 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
     }
 
     private fun getFunctionName(from: DeclarationObject, to: DeclarationObject) = "map${from.suffix}To${to.suffix}"
+
     data class DeclarationObject(val declaration: KSClassDeclaration, val name: String, val suffix: String)
 
     companion object {
