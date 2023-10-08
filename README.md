@@ -59,4 +59,4 @@ This project is licensed under the MIT License - see the `LICENSE` file for deta
 
 ## Credits
 
-Developed by [Your Name/Username]. Special thanks to [collaborators/contributors].
+Developed by [@ted3x].
