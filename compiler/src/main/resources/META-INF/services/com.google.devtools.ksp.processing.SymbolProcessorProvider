@@ -1,1 +1,2 @@
 com.space.compiler.mapper.MapperSymbolProcessorProvider
+com.space.compiler.featurecomponent.FeatureComponentSymbolProcessorProvider
