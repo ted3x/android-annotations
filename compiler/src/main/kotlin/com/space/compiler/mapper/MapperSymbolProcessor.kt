@@ -17,23 +17,29 @@ import com.squareup.kotlinpoet.ksp.toClassName
 import com.squareup.kotlinpoet.ksp.toTypeName
 import com.squareup.kotlinpoet.ksp.writeTo
 
-// Todo add warning when some class is missing dto / domain model
-// one class is annotated with dto but there is no domain model annotation or vice versa
 class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGenerator: CodeGenerator) : SymbolProcessor {
     override fun process(resolver: Resolver): List<KSAnnotated> {
         val unresolvedSymbols = mutableListOf<KSAnnotated>()
-        resolver.getAllFiles().forEach { file ->
+        resolver.getNewFiles().forEach { file ->
             val dtoDeclarations = file.filterAnnotatedWith(DTO::class)
-            val domainDeclarations = file.filterAnnotatedWith(DomainModel::class)
+            val domainDeclarations = file.filterAnnotatedWith(DomainModel::class).toMutableList()
 
             dtoDeclarations.mapNotNullToDtoAndDomainPairs(domainDeclarations)
                 .forEach { (dtoDeclaration, domainDeclaration) ->
                     try {
+                        domainDeclarations.remove(domainDeclaration)
                         generateMapperFile(resolver, file, dtoDeclaration, domainDeclaration)
                     } catch (e: FileNotGeneratedException) {
                         unresolvedSymbols.addAll(listOf(dtoDeclaration, domainDeclaration))
                     }
                 }
+
+            domainDeclarations.forEach {
+                logger.warn(
+                    "There was found Domain model ${it.simpleName.asString()}, but there was no DTO model, so it was skipped",
+                    it
+                )
+            }
         }
         return unresolvedSymbols
     }
@@ -42,7 +48,13 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
         mapNotNull { dtoDeclaration ->
             val dtoDeclarationName = dtoDeclaration.withoutSuffix(MapperModelType.DTO.suffix)
             domainDeclarations.find { it.withoutSuffix(MapperModelType.Domain.suffix) == dtoDeclarationName }
-                ?.let { domainDeclaration -> dtoDeclaration to domainDeclaration }
+                ?.let { domainDeclaration -> dtoDeclaration to domainDeclaration } ?: run {
+                logger.warn(
+                    "There was found DTO model ${dtoDeclarationName}, but there was no Domain model, so it was skipped",
+                    dtoDeclaration
+                )
+                null
+            }
         }
 
     private fun generateMapperFile(
