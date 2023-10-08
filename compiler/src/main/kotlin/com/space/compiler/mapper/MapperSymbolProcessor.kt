@@ -1,5 +1,6 @@
 package com.space.compiler.mapper
 
+import com.google.devtools.ksp.getClassDeclarationByName
 import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.KSPLogger
 import com.google.devtools.ksp.processing.Resolver
@@ -24,7 +25,7 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
             val dtoDeclarations = file.filterAnnotatedWith(DTO::class)
             val domainDeclarations = file.filterAnnotatedWith(DomainModel::class).toMutableList()
 
-            dtoDeclarations.mapNotNullToDtoAndDomainPairs(domainDeclarations)
+            dtoDeclarations.mapNotNullToDtoAndDomainPairs(domainDeclarations, resolver)
                 .forEach { (dtoDeclaration, domainDeclaration) ->
                     try {
                         domainDeclarations.remove(domainDeclaration)
@@ -44,9 +45,17 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
         return unresolvedSymbols
     }
 
-    private fun List<KSClassDeclaration>.mapNotNullToDtoAndDomainPairs(domainDeclarations: List<KSClassDeclaration>) =
+    private fun List<KSClassDeclaration>.mapNotNullToDtoAndDomainPairs(
+        domainDeclarations: List<KSClassDeclaration>,
+        resolver: Resolver
+    ) =
         mapNotNull { dtoDeclaration ->
             val dtoDeclarationName = dtoDeclaration.withoutSuffix(MapperModelType.DTO.suffix)
+            dtoDeclaration.getAnnotationOrNull(MapsTo::class)?.let {
+                val mapsToClass = (it.arguments.first().value as? KSType)?.toClassName()
+                val domainDeclaration = resolver.getClassDeclarationByName(mapsToClass.toString())!!
+                return@mapNotNull dtoDeclaration to domainDeclaration
+            }
             domainDeclarations.find { it.withoutSuffix(MapperModelType.Domain.suffix) == dtoDeclarationName }
                 ?.let { domainDeclaration -> dtoDeclaration to domainDeclaration } ?: run {
                 logger.warn(
@@ -108,7 +117,7 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
 
             val fromParam = from.declaration.primaryConstructor?.parameters
                 ?.firstOrNull {
-                    it.name?.asString() == paramName || paramName == from.getFieldName(it)
+                    it.name?.asString() == paramName || paramName == from.getFieldName(it, to.declaration)
                 }
 
             val mappingCode = when {
@@ -124,7 +133,7 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
                 }
 
                 fromParam != null && fromParam.type.resolve() == param.type.resolve() -> "${from.modelType.modelName}.$fromParam"
-                else -> generateLambdaMapperCode(from, param, paramName, funSpecBuilder)
+                else -> generateLambdaMapperCode(from, to, param, paramName, funSpecBuilder)
             }
 
             codeBuilder.add("$paramName = $mappingCode,\n")
@@ -157,13 +166,14 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
 
     private fun generateLambdaMapperCode(
         from: DeclarationObject,
+        to: DeclarationObject,
         param: KSValueParameter,
         paramName: String,
         funSpecBuilder: FunSpec.Builder
     ): String {
         val fromParam = from.declaration.primaryConstructor?.parameters
             ?.firstOrNull {
-                it.name?.asString() == paramName || paramName == from.getFieldName(it)
+                it.name?.asString() == paramName || paramName == from.getFieldName(it, to.declaration)
             }
         val fromParamType = fromParam?.type?.resolve()?.toTypeName() ?: return ""
         val fromParamName = fromParam.name?.asString()
@@ -210,11 +220,15 @@ class MapperSymbolProcessor(private val logger: KSPLogger, private val codeGener
         val declaration: KSClassDeclaration,
         val modelType: MapperModelType
     ) {
-        fun getFieldName(ksValueParameter: KSValueParameter): String? {
+        fun getFieldName(ksValueParameter: KSValueParameter, other: KSClassDeclaration): String? {
+            val parameterName = ksValueParameter.name?.asString()
             return when (modelType) {
-                MapperModelType.Domain -> ksValueParameter.annotations.firstOrNull {
-                    it.annotationType.resolve().declaration.simpleName.asString() == DTOFieldName::class.simpleName
-                }?.arguments?.first()?.value as? String
+                MapperModelType.Domain -> other.primaryConstructor!!.parameters.firstOrNull {
+                    it.annotations.any { annotation ->
+                        annotation.shortName.asString() == DomainFieldName::class.simpleName &&
+                                annotation.arguments.first().value?.toString() == parameterName
+                    }
+                }?.name?.asString()
 
                 MapperModelType.DTO -> ksValueParameter.annotations.firstOrNull {
                     it.annotationType.resolve().declaration.simpleName.asString() == DomainFieldName::class.simpleName

@@ -9,7 +9,7 @@ import java.util.*
 import kotlin.reflect.KClass
 
 @OptIn(KspExperimental::class)
-fun <T : Annotation> KSFile.filterAnnotatedWith(annotationClazz: KClass<T>): List<KSClassDeclaration> {
+internal fun <T : Annotation> KSFile.filterAnnotatedWith(annotationClazz: KClass<T>): List<KSClassDeclaration> {
     return declarations
         .filter { it.isAnnotationPresent(annotationClazz) }
         .filterIsInstance<KSClassDeclaration>()
@@ -31,6 +31,10 @@ internal fun KSType.isClass(): Boolean {
 internal fun String.decapitalize() = replaceFirstChar { it.lowercase(Locale.getDefault()) }
 internal fun String.capitalize() = replaceFirstChar { it.uppercase(Locale.getDefault()) }
 
-fun KSDeclaration.withoutSuffix(suffix: String): String {
+internal fun <T : Annotation> KSClassDeclaration.getAnnotationOrNull(annotationClazz: KClass<T>): KSAnnotation? {
+    return annotations.firstOrNull { it.shortName.asString() == annotationClazz.simpleName.toString() }
+}
+
+internal fun KSDeclaration.withoutSuffix(suffix: String): String {
     return simpleName.asString().removeSuffix(suffix)
 }

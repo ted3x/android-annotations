@@ -23,3 +23,21 @@ data class TestClassDomainModel(
     @DTOFieldName("testInt")
     val testString: String
 )
+
+@DTO
+@MapsTo(TestClassAnotherDomainModel::class)
+data class TestClassAnotherDto(
+    val value: String,
+    val enum: ModelTwoEnumDto,
+    @DomainFieldName("d")
+    val sd: String,
+    @DomainFieldName("testString")
+    val testInt: Int
+)
+
+data class TestClassAnotherDomainModel(
+    val value: String,
+    val enum: ModelTwoEnumDomainModel,
+    val d: String,
+    val testString: String
+)
